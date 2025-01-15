@@ -6,10 +6,13 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 from bs4 import BeautifulSoup
+import pytz
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 CHANNEL_ID = int(os.getenv('CHANNEL_ID'))
+
+EST = pytz.timezone('America/New_York') # Regulates Oracle VM timezone
 
 # Bot setup
 intents = discord.Intents.default()
@@ -31,18 +34,17 @@ class OpportunityDatabase:
         self.db = self.client['SECareers']
         self.opportunities = self.db['Opportunity Listings']
         
+        ''' USE AFTER MODIFYING SCHEMA'''
+        # Drops all existing indexes
+        self.opportunities.drop_indexes()
+        
         self.opportunities.create_index([
-            ("company", 1),
-            ("title", 1),
-            ("location", 1),
-            ("date_posted", 1),
-            ("terms", 1),
-            ("sponsorship", 1)
+            ("link", 1)
         ], unique=True)
     
     def add_opportunity(self, opp):
         try:
-            opp['timestamp'] = datetime.now()
+            opp['timestamp'] = datetime.now(EST)
             result = self.opportunities.insert_one(opp)
             return True
         except Exception as e:
@@ -57,9 +59,7 @@ class OpportunityDatabase:
     
     def opportunity_exists(self, opp):
         return self.opportunities.find_one({
-            'company': opp['company'],
-            'title': opp['title'],
-            'location': opp['location']
+            "link": opp["link"]
         }) is not None
 
 def fetch_github_opportunities(repo_url, test_date=None):
@@ -76,14 +76,18 @@ def fetch_github_opportunities(repo_url, test_date=None):
         tables = soup.find_all('table')
         current_company = ""
 
-        current_date = datetime.now()
+        current_date = datetime.now(EST)
         target_year = current_date.year
         
         if test_date:
-            target_date = datetime.strptime(test_date, "%B %d, %Y").strftime("%b %d")
-            target_year = datetime.strptime(test_date, "%B %d, %Y").year
+            target_date_obj = datetime.strptime(test_date, "%B %d, %Y")
+            target_date_obj = EST.localize(target_date_obj)
+            target_date = target_date_obj.strftime("%b %d")
+            target_year = target_date_obj.year
+        
         else:
-            target_date = datetime.now().strftime("%b %d")
+            target_date_obj = current_date
+            target_date = current_date.strftime("%b %d")
             
         print(f"Searching for opportunities posted on: {target_date}")
         
@@ -95,46 +99,52 @@ def fetch_github_opportunities(repo_url, test_date=None):
                 # Valid repo table
                 if len(cols) >= 5:
 
-                    if repo_url == offseason_repo:
-                        date_posted = cols[-1].text.strip()
-                        company_text = cols[0].text.strip()
-                        title = cols[1].text.strip()
-                        location = cols[2].text.strip()
-                        terms = cols[3].text.strip()
-                        link = cols[4].find('a')['href'] if cols[4].find('a') else None
-                        if link == None:
-                            continue
-                    
-                    elif repo_url == main_repo:
-                        date_posted = cols[4].text.strip()
-                        company_text = cols[0].text.strip()
-                        title = cols[1].text.strip()
-                        location = cols[2].text.strip()
-                        terms = "Summer 2025"
-                        link = cols[3].find('a')['href'] if cols[3].find('a') else None
-                        if link == None:
-                            continue
-                    
-                    elif repo_url == newgrad_repo:
-                        date_posted = cols[4].text.strip()
-                        company_text = cols[0].text.strip()
-                        title = cols[1].text.strip()
-                        location = cols[2].text.strip()
-                        terms = "New Grad"
-                        link = cols[3].find('a')['href'] if cols[3].find('a') else None
-                        if link == None:
-                            continue
-                    
-                    # Handle company name for arrow cases
-                    if company_text == "↳":
-                        company = current_company
-                    else:
-                        company = company_text
-                        current_company = company
-                    
-                    if date_posted == target_date:
+                    # Extract date first to check if scraping for curr repo should continue
+                    date_posted = cols[-1].text.strip()
 
-                        full_date = datetime.strptime(f"{date_posted} {target_year}", "%b %d %Y").strftime("%B %d, %Y")
+                    # Convert posted date to datetime object for comparison
+                    try:
+                        posted_date_obj = datetime.strptime(f"{date_posted} {target_year}", "%b %d %Y")
+                        posted_date_obj = EST.localize(posted_date_obj)
+
+                        # Only break if we're more than a day behind
+                        if (target_date_obj - posted_date_obj).days > 1:
+                            break
+
+                        # Continue only if dates match
+                        if date_posted != target_date:
+                            continue
+
+                        if repo_url == offseason_repo:
+                            company_text = cols[0].text.strip()
+                            title = cols[1].text.strip()
+                            location = cols[2].text.strip()
+                            terms = cols[3].text.strip()
+                            link = cols[4].find('a')['href'] if cols[4].find('a') else None
+                        
+                        elif repo_url == main_repo:
+                            company_text = cols[0].text.strip()
+                            title = cols[1].text.strip()
+                            location = cols[2].text.strip()
+                            terms = "Summer 2025"
+                            link = cols[3].find('a')['href'] if cols[3].find('a') else None
+                        
+                        elif repo_url == newgrad_repo:
+                            company_text = cols[0].text.strip()
+                            title = cols[1].text.strip()
+                            location = cols[2].text.strip()
+                            terms = "New Grad"
+                            link = cols[3].find('a')['href'] if cols[3].find('a') else None
+
+                        if link is None:
+                            continue
+                        
+                        # Handle company name for arrow cases
+                        if company_text == "↳":
+                            company = current_company
+                        else:
+                            company = company_text
+                            current_company = company
 
                         location_cell = cols[2]
                         locations = []
@@ -149,13 +159,18 @@ def fetch_github_opportunities(repo_url, test_date=None):
                             "title": title,
                             "location": formatted_locations,
                             "link": link,
-                            "date_posted": full_date,
+                            "date_posted": posted_date_obj.strftime("%B %d, %Y"),
                             "terms": terms,
                             "sponsorship": determine_sponsorship(title)  
                         }
                         opportunities.append(opportunity)
 
+                    except ValueError as e:
+                        print(f"Error parsing date: {e}")
+                        continue
+
         return opportunities
+        
     except Exception as e:
         print(f"Error fetching GitHub opportunities: {e}")
         return []
@@ -219,6 +234,24 @@ def fetch_opportunities(test_date=None):
     return opportunities
    
 def create_opportunity_embed(opp):
+
+    role_categories = {
+        'SWE': '💻',
+        'Frontend': '</>',
+        'Backend': '⚙️',
+        'Full Stack': '🔄',
+        'Mobile': '📱',
+        'DevOps/Cloud': '♾️',
+        'AI/ML': '🤖',
+        'Data Engineering': '🛢️',
+        'Data Science': '📊',
+        'Embedded': '🔌',
+        'Security': '🔒',
+        'Research': '🔬',
+        'Product/TPM': '📋',
+        'Other': '🔗'
+    }
+
     """Create a Discord message embedding for an opportunity"""
     embed = discord.Embed(color=discord.Color.blue())
     
@@ -233,6 +266,11 @@ def create_opportunity_embed(opp):
     # Position title 
     embed.description += f"### [**{opp['title']}**]({opp.get('link', '')})\n\n" 
     
+    # Position Category
+    category = determine_role_category(opp)
+    category_emoji = role_categories.get(category, '🔗')  # Default if category not found
+    embed.add_field(name=f"{category_emoji} Category", value=category, inline=False)
+
     # Locations
     embed.add_field(name="📍 Location(s)", value=opp['location'], inline=False)
 
@@ -251,12 +289,12 @@ def create_opportunity_embed(opp):
     embed.add_field(name="🌍 Sponsorship", value=opp['sponsorship'], inline=False)
 
     # Time Posted
-    time_posted = f"{opp['date_posted']} at {datetime.now().strftime('%I:%M %p ET')}"
+    time_posted = f"{opp['date_posted']} at {datetime.now(EST).strftime('%I:%M %p ET')}"
     embed.add_field(name="🧾 Listed", value=time_posted, inline=False)    
     
     return embed
 
-@tasks.loop(hours=24)
+@tasks.loop(minutes=1)
 async def post_opportunities(test_date=None):
     try:
         channel = bot.get_channel(CHANNEL_ID)
@@ -264,90 +302,124 @@ async def post_opportunities(test_date=None):
             print(f"Error: Could not find channel with ID {CHANNEL_ID}")
             return
 
-        today = datetime.strptime(test_date, "%B %d, %Y") if test_date else datetime.now()
+        today = datetime.strptime(test_date, "%B %d, %Y") if test_date else datetime.now(EST)
         thread_name = f"📆 {today.strftime('%B %d, %Y')}"
 
         opportunities = fetch_opportunities(test_date)
         if not opportunities:
-            print(f"No new opportunities posted on {today.strftime('%B %d, %Y')}")
+            print(f"No new opportunities posted on {today}")
             return
+        else:
+            print(f"{len(opportunities)} posted on {today}")
+
+        # Find existing daily thread
+        daily_thread = None
+        for thread in channel.threads:
+            if thread.name == thread_name:
+                daily_thread = thread
+                break
+
+        is_new_thread = False
         
-        daily_thread = await channel.create_thread(
-            name=thread_name,
-            content=f"{len(opportunities)} new opportunities posted on FALL '24: {today.strftime('%B %d, %Y')}",
-            auto_archive_duration=1440
-        )
+        # Create new daily thread if no pre-existing one
+        if daily_thread is None:
+            daily_thread = await channel.create_thread(
+                name=thread_name,
+                content=f"{len(opportunities)} new opportunities posted on Spring '25: {today.strftime('%B %d, %Y')}",
+                auto_archive_duration=1440
+            )
+            is_new_thread = True
 
-        role_categories = {
-            'General SWE': '💻',
-            'Frontend': '</>',
-            'Backend': '⚙️',
-            'Full Stack': '🔄',
-            'Mobile': '📱',
-            'DevOps/Cloud': '♾️',
-            'AI/ML': '🤖',
-            'Data Science': '📊',
-            'Embedded': '🔌',
-            'Security': '🔒',
-            'Research': '🔬',
-            'Product/TPM': '📋',
-            'Other': '🔗'
-        }
+        else:
+            # Update the opportunity count in existing thread
+            async for message in daily_thread.history(limit=1, oldest_first=True):
+                if message.author == bot.user:
+                    current_count = int(message.content.split()[0])
+                    new_count = current_count + len(opportunities)
+                    await message.edit(content=f"{new_count} new opportunities posted on Spring '25: {today.strftime('%B %d, %Y')}")
+                break
 
-        # Sort opportunities into categories
-        categorized_opps = {category: [] for category in role_categories.keys()}
+        # Post opportunities
         for opp in opportunities:
-            category = determine_role_category(opp)
-            # Remove emoji from category name for sorting
-            clean_category = ''.join(c for c in category if not ord(c) > 127)
-            clean_category = clean_category.strip()
-            if clean_category in categorized_opps:
-                categorized_opps[clean_category].append(opp)
-
-        # Post opportunities by category with dividers
-        first_category = True
-        for category, opps in categorized_opps.items():
-            if opps:
-                if not first_category:
-                    await daily_thread.thread.send('────────────────────────────────')
-                
-                # Post category header with emoji
-                await daily_thread.thread.send(f"{role_categories[category]} {category}")
-                
-                # Post opportunities in category
-                for opp in opps:
-                    embed = create_opportunity_embed(opp)
-                    await daily_thread.thread.send(embed=embed)
-                    await asyncio.sleep(1)
-                
-                first_category = False
+            embed = create_opportunity_embed(opp)
+            if is_new_thread:
+                await daily_thread.thread.send(embed=embed)
+            else:
+                await daily_thread.send(embed=embed)
+            await asyncio.sleep(1)
 
     except Exception as e:
         print(f"Error in post_opportunities: {str(e)}")
 
 def determine_role_category(opp):
-    """Determine the role category based on job title and description"""
+    """Determine the role category based on job title."""
     title = opp['title'].lower()
     keywords = {
-        'General SWE': ['software engineer', 'swe', 'software developer'],
-        'Frontend': ['frontend', 'ui', 'react', 'angular', 'javascript'],
-        'Backend': ['backend', 'api', 'server', 'java', 'python', 'golang', 'database'],
-        'Full Stack': ['full stack', 'fullstack', 'full-stack', 'web development'],
-        'Mobile': ['mobile', 'ios', 'android', 'flutter', 'react native'],
-        'DevOps/Cloud': ['devops', 'cloud', 'infrastructure', 'aws', 'azure', 'sre', 'reliability', 'systems'],
-        'AI/ML': ['machine learning', 'ai', 'ml', 'deep learning', 'artificial intelligence', 'computer vision', 'deep learning', 'nlp', 'reinforcement learning'],
-        'Data Science': ['data', 'analytics', 'statistics', 'sql',],
-        'Embedded': ['embedded', 'firmware', 'hardware', 'iot'],
-        'Security': ['security', 'cybersecurity', 'infosec', 'cryptography'],
-        'Research': ['research', 'r&d', 'scientist', 'phd'],
-        'Product/TPM': ['product', 'program manager', 'tpm', 'technical program']
+        'SWE': [
+            'software engineer', 'swe', 'software developer', 'sde', 'software development',
+            'development engineer', 'software development engineer', 'software engineering'
+        ],
+        'Frontend': [
+            'frontend', 'front end', 'front-end', 'web developer'
+        ],
+        'Backend': [
+            'backend', 'back end', 'back-end'
+        ],
+        'Full Stack': [
+            'full stack', 'fullstack', 'full-stack', 'web development'
+        ],
+        'Mobile': [
+            'mobile', 'ios', 'android', 'flutter', 'react native', 
+            'mobile developer', 'mobile engineer'
+        ],
+        'DevOps/Cloud': [
+            'devops', 'cloud', 'infrastructure', 'aws', 'sre', 
+            'reliability', 'systems', 'test engineer'
+        ],
+        'AI/ML': [
+            'machine learning', 'ai', 'ml', 'deep learning', 
+            'artificial intelligence', 'computer vision', 'nlp', 
+            'reinforcement learning'
+        ],
+        'Data Science': [
+            'data scientist', 'data analytics', 'business insights', 
+            'analytics', 'statistics', 'business intelligence',
+            'quantitative', 'data analysis', 'data science'
+        ],
+        'Data Engineering': [
+            'data engineer', 'data engineering', 'data pipeline', 'big data'
+        ],
+        'Embedded': [
+            'embedded', 'firmware', 'hardware', 'iot', 'embedded systems'
+        ],
+        'Security': [
+            'security', 'cybersecurity', 'infosec', 'cryptography', 
+            'cyber', 'cyber software'
+        ],
+        'Research': [
+            'research', 'r&d', 'scientist', 'phd', 'research engineer'
+        ],
+        'Product/TPM': [
+            'product', 'program manager', 'tpm', 'technical program',
+            'product manager', 'technical product'
+        ]
     }
     
+    # Check for exact role matches first
+    if 'backend' in title and 'software' in title:
+        return 'Backend'
+    if 'frontend' in title and 'software' in title:
+        return 'Frontend'
+    if 'full stack' in title or 'fullstack' in title:
+        return 'Full Stack'
+    
+    # Then check keyword matches
     for category, category_keywords in keywords.items():
         if any(keyword in title for keyword in category_keywords):
             return category
     
     return 'Other'  # Default category
+
 
 def determine_sponsorship(title):
     """Determine sponsorship status based on title indicators"""
@@ -356,7 +428,7 @@ def determine_sponsorship(title):
     elif "🇺🇸" in title:
         return "Requires U.S. Citizenship"
     else:
-        return "Other"
+        return "Not Specified"
 
 @bot.event
 async def on_ready():
