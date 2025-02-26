@@ -1,7 +1,7 @@
-# SECareers - Opportunities Discord Bot
+# SECareers ≈ Opportunities Discord Bot
 ![SECareers Logo](./images/SEC_logo.png)
 
-<img width="650" alt="SECareers Bot Interface" src="./images/CareersBot_demo.png">
+<img width="700" alt="SECareers Bot Interface" src="./images/CareersBot_demo.png">
 
 ## ⚙️ **Key Features**
 
@@ -41,5 +41,5 @@ Here's to landing our dream careers! 💼
 ---
 
 ### 📝 **How to get Started**
-Connect with the UF Software Engineering Club and access SECareers by joining our Discord server!
+Connect with the UF Software Engineering Club and access SECareers by joining our Discord!
 https://discord.gg/Z7ka9VEt
