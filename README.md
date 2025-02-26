@@ -1,7 +1,7 @@
 # SECareers - Opportunities Discord Bot
 ![SECareers Logo](./images/SEC_logo.png)
 
-<img width="600" alt="SECareers Bot Interface" src="./images/CareersBot_demo.png">
+<img width="650" alt="SECareers Bot Interface" src="./images/CareersBot_demo.png">
 
 ## ⚙️ **Key Features**
 
